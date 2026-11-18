@@ -11,7 +11,7 @@ use E98\YouTrack\YouTrackClient;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 
-final class Projects
+class Projects
 {
     public function __construct(private readonly YouTrackClient $client)
     {

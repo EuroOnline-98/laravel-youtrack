@@ -12,7 +12,7 @@ use E98\YouTrack\Fields;
 use E98\YouTrack\YouTrackClient;
 use Illuminate\Support\Collection;
 
-final class Issues
+class Issues
 {
     public function __construct(
         private readonly YouTrackClient $client,

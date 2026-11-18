@@ -1,0 +1,419 @@
+<?php
+
+declare(strict_types=1);
+
+namespace E98\YouTrack\Testing;
+
+use Closure;
+use E98\YouTrack\Exceptions\YouTrackException;
+use E98\YouTrack\Support\FieldValue;
+use E98\YouTrack\YouTrackClient;
+use PHPUnit\Framework\Assert;
+
+/**
+ * A recording, in-memory replacement for the YouTrack client, installed with
+ * YouTrack::fake(). Nothing leaves the process: issues, comments and projects live
+ * in memory, every call is recorded, and the assert* methods check what your code did.
+ *
+ *     $fake = YouTrack::fake();
+ *     $fake->withIssue('SUP-12', ['state' => 'Open']);
+ *
+ *     // ... run the code under test ...
+ *
+ *     $fake->assertIssueCreated(['summary' => 'Checkout fails', 'project' => 'SUP']);
+ *     $fake->assertCommented('SUP-12');
+ *
+ * Calls that bypass the resources (get/post/request/upload on the client) are not
+ * faked and throw, so a test can never reach a real server by accident.
+ */
+final class FakeYouTrack extends YouTrackClient
+{
+    private const DEFAULT_RESOLVED_STATES = [
+        'Fixed', 'Verified', "Won't fix", 'Duplicate', 'Obsolete', "Can't reproduce", 'Incomplete',
+    ];
+
+    private readonly FakeProjects $fakeProjects;
+
+    private readonly FakeIssues $fakeIssues;
+
+    /** @var list<array{type: string, data: array<string, mixed>}> */
+    private array $recorded = [];
+
+    private string $initialState = 'Submitted';
+
+    /** @var list<string> */
+    private array $resolvedStates = self::DEFAULT_RESOLVED_STATES;
+
+    /**
+     * @param  array<string, mixed>  $config  The "youtrack" config array.
+     */
+    public function __construct(array $config = [])
+    {
+        if (trim((string) ($config['base_url'] ?? '')) === '') {
+            $config['base_url'] = 'https://youtrack.fake';
+        }
+
+        parent::__construct($config);
+
+        $this->fakeProjects = new FakeProjects($this);
+        $this->fakeIssues = new FakeIssues($this, $this->fakeProjects);
+    }
+
+    public function issues(): FakeIssues
+    {
+        return $this->fakeIssues;
+    }
+
+    public function projects(): FakeProjects
+    {
+        return $this->fakeProjects;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function ping(): array
+    {
+        return $this->user() + ['email' => 'fake@youtrack.test'];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function request(string $method, string $uri, array $query = [], ?array $body = null): mixed
+    {
+        throw $this->unexpected(strtoupper($method) . ' ' . $uri);
+    }
+
+    public function upload(string $uri, string $path, ?string $name = null, array $query = []): mixed
+    {
+        throw $this->unexpected('POST ' . $uri . ' (upload)');
+    }
+
+    // ---------------------------------------------------------------- setup
+
+    /**
+     * Seed an issue that already "exists in YouTrack", e.g. one your database stores the id of.
+     *
+     * @param  array{summary?: string, description?: string|null, state?: string, project?: string, customFields?: list<array<string, mixed>>}  $attributes
+     */
+    public function withIssue(string $key, array $attributes = []): self
+    {
+        $this->fakeIssues->seed($key, $attributes);
+
+        return $this;
+    }
+
+    public function withComment(string $issue, string $text, ?string $author = null): self
+    {
+        $this->fakeIssues->seedComment($issue, $text, $author);
+
+        return $this;
+    }
+
+    public function withProject(string $shortName, ?string $name = null): self
+    {
+        $this->fakeProjects->register($shortName, $name);
+
+        return $this;
+    }
+
+    /**
+     * Replace the plain text search, e.g. to answer a specific YouTrack query.
+     *
+     * @param  Closure(string, int, int): iterable<\E98\YouTrack\Data\Issue>  $resolver  Receives the query, limit and skip.
+     */
+    public function searchUsing(Closure $resolver): self
+    {
+        $this->fakeIssues->searchUsing($resolver);
+
+        return $this;
+    }
+
+    /**
+     * The state new issues start in (YouTrack's default is "Submitted").
+     */
+    public function initialStateIs(string $state): self
+    {
+        $this->initialState = $state;
+
+        return $this;
+    }
+
+    /**
+     * The states that mark an issue as resolved (Issue::isResolved()).
+     *
+     * @param  list<string>  $states
+     */
+    public function resolvedStatesAre(array $states): self
+    {
+        $this->resolvedStates = array_values($states);
+
+        return $this;
+    }
+
+    public function initialState(): string
+    {
+        return $this->initialState;
+    }
+
+    public function isResolvedState(string $state): bool
+    {
+        return in_array($state, $this->resolvedStates, true);
+    }
+
+    /**
+     * @return array{id: string, login: string, fullName: string}
+     */
+    public function user(): array
+    {
+        return ['id' => '1-0', 'login' => 'fake', 'fullName' => 'Fake User'];
+    }
+
+    // ------------------------------------------------------------ recording
+
+    /**
+     * @internal Used by the fake resources.
+     *
+     * @param  array<string, mixed>  $data
+     */
+    public function record(string $type, array $data): void
+    {
+        $this->recorded[] = ['type' => $type, 'data' => $data];
+    }
+
+    /**
+     * The recorded calls (type: create, get, search, update, delete, comments, comment, command, attach).
+     *
+     * @return list<array<string, mixed>> The data of each call, in the order they happened.
+     */
+    public function recorded(?string $type = null): array
+    {
+        $calls = $type === null
+            ? $this->recorded
+            : array_filter($this->recorded, static fn (array $call): bool => $call['type'] === $type);
+
+        return array_values(array_map(static fn (array $call): array => $call['data'], $calls));
+    }
+
+    // ----------------------------------------------------------- assertions
+
+    /**
+     * Assert that an issue was created. Pass an array to match on summary, description,
+     * project (short name) and "fields" (custom field name => plain value), or a closure
+     * that receives the recorded call (summary, description, project, customFields, fields,
+     * extra) and returns true for a match.
+     *
+     *     $fake->assertIssueCreated(['summary' => 'Checkout fails', 'fields' => ['Priority' => 'Critical']]);
+     *
+     * @param  array<string, mixed>|Closure(array<string, mixed>): bool|null  $expected
+     */
+    public function assertIssueCreated(array|Closure|null $expected = null): void
+    {
+        $created = $this->recorded('create');
+        Assert::assertNotEmpty($created, 'Expected an issue to be created, but none was.');
+
+        if ($expected === null) {
+            return;
+        }
+
+        $matches = array_filter($created, fn (array $call): bool => $this->matchesCreate($call, $expected));
+
+        Assert::assertNotEmpty(
+            $matches,
+            'No created issue matched the expectation. Created: ' . $this->dump($created),
+        );
+    }
+
+    public function assertIssueCreatedTimes(int $times): void
+    {
+        Assert::assertCount($times, $this->recorded('create'), "Expected {$times} issue(s) to be created.");
+    }
+
+    public function assertNoIssueCreated(): void
+    {
+        $created = $this->recorded('create');
+
+        Assert::assertEmpty($created, 'Expected no issue to be created, but got: ' . $this->dump($created));
+    }
+
+    /**
+     * Assert that a comment was added to the issue; optionally with exactly this text,
+     * or accepted by a closure that receives the text.
+     *
+     * @param  string|Closure(string): bool|null  $text
+     */
+    public function assertCommented(string $issue, string|Closure|null $text = null): void
+    {
+        $comments = array_filter(
+            $this->recorded('comment'),
+            fn (array $call): bool => strcasecmp((string) $call['id'], $issue) === 0,
+        );
+
+        Assert::assertNotEmpty($comments, "Expected a comment on {$issue}, but none was added.");
+
+        if ($text === null) {
+            return;
+        }
+
+        $matches = array_filter($comments, static fn (array $call): bool => $text instanceof Closure
+            ? (bool) $text((string) $call['text'])
+            : $call['text'] === $text);
+
+        Assert::assertNotEmpty($matches, "No comment on {$issue} matched. Comments: " . $this->dump(array_values($comments)));
+    }
+
+    public function assertNothingCommented(): void
+    {
+        $comments = $this->recorded('comment');
+
+        Assert::assertEmpty($comments, 'Expected no comments, but got: ' . $this->dump($comments));
+    }
+
+    /**
+     * Assert that the issue's state was changed (changeState() or an update of the state
+     * field); optionally to this state.
+     */
+    public function assertStateChanged(string $issue, ?string $state = null): void
+    {
+        $field = (string) $this->option('state_field', 'State');
+
+        $changes = array_filter($this->recorded('update'), static function (array $call) use ($issue, $field, $state): bool {
+            if (strcasecmp((string) $call['id'], $issue) !== 0) {
+                return false;
+            }
+
+            foreach ((array) ($call['attributes']['customFields'] ?? []) as $payload) {
+                if (($payload['name'] ?? null) === $field
+                    && ($state === null || FieldValue::normalize($payload['value'] ?? null) === $state)) {
+                    return true;
+                }
+            }
+
+            return false;
+        });
+
+        Assert::assertNotEmpty(
+            $changes,
+            $state === null
+                ? "Expected the state of {$issue} to be changed, but it was not."
+                : "Expected {$issue} to be moved to '{$state}', but it was not.",
+        );
+    }
+
+    /**
+     * Assert that the issue was updated (summary, description, custom fields ...); optionally
+     * with a closure that receives the update attributes and returns true for a match.
+     *
+     * @param  Closure(array<string, mixed>): bool|null  $callback
+     */
+    public function assertUpdated(string $issue, ?Closure $callback = null): void
+    {
+        $updates = array_filter(
+            $this->recorded('update'),
+            fn (array $call): bool => strcasecmp((string) $call['id'], $issue) === 0
+                && ($callback === null || (bool) $callback($call['attributes'])),
+        );
+
+        Assert::assertNotEmpty($updates, "Expected {$issue} to be updated, but it was not.");
+    }
+
+    public function assertCommandSent(string $issue, ?string $query = null): void
+    {
+        $commands = array_filter(
+            $this->recorded('command'),
+            static fn (array $call): bool => strcasecmp((string) $call['id'], $issue) === 0
+                && ($query === null || $call['query'] === $query),
+        );
+
+        Assert::assertNotEmpty(
+            $commands,
+            $query === null
+                ? "Expected a command for {$issue}, but none was sent."
+                : "Expected the command '{$query}' for {$issue}, but it was not sent.",
+        );
+    }
+
+    public function assertAttached(string $issue, ?string $name = null): void
+    {
+        $attachments = array_filter(
+            $this->recorded('attach'),
+            static fn (array $call): bool => strcasecmp((string) $call['id'], $issue) === 0
+                && ($name === null || $call['name'] === $name),
+        );
+
+        Assert::assertNotEmpty($attachments, "Expected a file to be attached to {$issue}, but none was.");
+    }
+
+    public function assertDeleted(string $issue): void
+    {
+        $deleted = array_filter(
+            $this->recorded('delete'),
+            static fn (array $call): bool => strcasecmp((string) $call['id'], $issue) === 0,
+        );
+
+        Assert::assertNotEmpty($deleted, "Expected {$issue} to be deleted, but it was not.");
+    }
+
+    /**
+     * Assert that the code under test made no call to YouTrack at all (reads included).
+     */
+    public function assertNothingSent(): void
+    {
+        $calls = $this->recorded();
+
+        Assert::assertEmpty($calls, 'Expected nothing to be sent to YouTrack, but got ' . count($calls) . ' call(s): ' . $this->dump($calls));
+    }
+
+    // -------------------------------------------------------------- helpers
+
+    /**
+     * @param  array<string, mixed>  $call
+     * @param  array<string, mixed>|Closure  $expected
+     */
+    private function matchesCreate(array $call, array|Closure $expected): bool
+    {
+        if ($expected instanceof Closure) {
+            return (bool) $expected($call);
+        }
+
+        foreach ($expected as $key => $value) {
+            if ($key === 'fields') {
+                foreach ((array) $value as $name => $fieldValue) {
+                    if (! array_key_exists($name, $call['fields']) || $call['fields'][$name] != $fieldValue) {
+                        return false;
+                    }
+                }
+
+                continue;
+            }
+
+            if ($key === 'project') {
+                if (strcasecmp((string) $call['project'], (string) $value) !== 0) {
+                    return false;
+                }
+
+                continue;
+            }
+
+            if (($call[$key] ?? null) !== $value) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private function unexpected(string $request): YouTrackException
+    {
+        return new YouTrackException(
+            "Unexpected request while YouTrack is faked: {$request}. "
+            . 'Only the issues() and projects() resources are faked; the raw HTTP methods of the client are not.',
+        );
+    }
+
+    private function dump(mixed $value): string
+    {
+        return (string) json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PARTIAL_OUTPUT_ON_ERROR);
+    }
+}

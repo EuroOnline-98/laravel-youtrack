@@ -133,6 +133,48 @@ The message is taken from YouTrack's `error_description` when present.
 
 ### Testing your own code
 
+`YouTrack::fake()` replaces the client with an in-memory recording fake: nothing is sent over HTTP, no URL or token has to be configured, and the code under test gets the same `Issue` and `Comment` objects as in production. It swaps the facade and the container binding, so classes that inject `YouTrackClient` are covered too.
+
+```php
+use E98\YouTrack\Facades\YouTrack;
+
+public function test_a_failed_payment_opens_a_ticket(): void
+{
+    $fake = YouTrack::fake();
+
+    // ... run the code under test ...
+
+    $fake->assertIssueCreated([
+        'summary' => 'Payment failed',
+        'project' => 'SUP',
+        'fields' => ['Priority' => 'Critical'],
+    ]);
+    $fake->assertCommented('SUP-12', 'Retried the payment');
+    $fake->assertStateChanged('SUP-12', 'In Progress');
+}
+```
+
+Issues created through the fake are numbered per project (`SUP-1`, `SUP-2`, ...) and start in the state `Submitted`. Seed issues that already exist in YouTrack, for example the ids your database stores:
+
+```php
+YouTrack::fake()
+    ->withIssue('SUP-12', ['summary' => 'Old problem', 'state' => 'Open'])
+    ->withComment('SUP-12', 'Earlier comment', 'anna')
+    ->withProject('SUP', 'Support');
+```
+
+Assertions: `assertIssueCreated()` (array or closure), `assertIssueCreatedTimes()`, `assertNoIssueCreated()`, `assertCommented()`, `assertNothingCommented()`, `assertStateChanged()`, `assertUpdated()`, `assertCommandSent()`, `assertAttached()`, `assertDeleted()` and `assertNothingSent()` (reads count as well). `recorded('comment')` returns the raw calls if you need your own checks.
+
+What the fake does not do:
+
+- `search()` is a plain, case-insensitive text match on id, summary and description; YouTrack's query language is not interpreted. Use `searchUsing(fn (string $query, int $limit, int $skip) => [...])` to answer a specific query.
+- `command()` is recorded but has no effect on the stored issue.
+- Reading or changing an issue that was neither created nor seeded throws `NotFoundException`, with a hint to seed it.
+- The raw client methods (`get`, `post`, `request`, `upload`) throw, so a test cannot reach a real server by accident.
+- The fake is no substitute for the live check: field names, state values and permissions are only validated by a real YouTrack.
+
+If you prefer to fake the HTTP layer instead, `Http::fake()` works as well, since all requests go through Laravel's HTTP client:
+
 ```php
 Http::fake([
     'youtrack.example.com/api/issues*' => Http::response([
