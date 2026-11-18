@@ -1,0 +1,46 @@
+{
+    "name": "e98/laravel-youtrack",
+    "description": "Laravel wrapper for the JetBrains YouTrack REST API: create issues, read status and details, comment, search.",
+    "type": "library",
+    "license": "MIT",
+    "keywords": ["laravel", "youtrack", "jetbrains", "issue-tracker", "api"],
+    "require": {
+        "php": "^8.2",
+        "illuminate/console": "^11.0|^12.0|^13.0",
+        "illuminate/contracts": "^11.0|^12.0|^13.0",
+        "illuminate/http": "^11.0|^12.0|^13.0",
+        "illuminate/support": "^11.0|^12.0|^13.0"
+    },
+    "require-dev": {
+        "orchestra/testbench": "^9.0|^10.0|^11.0",
+        "phpunit/phpunit": "^10.5|^11.0|^12.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "E98\\YouTrack\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "E98\\YouTrack\\Tests\\": "tests/"
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "E98\\YouTrack\\YouTrackServiceProvider"
+            ],
+            "aliases": {
+                "YouTrack": "E98\\YouTrack\\Facades\\YouTrack"
+            }
+        }
+    },
+    "scripts": {
+        "test": "phpunit"
+    },
+    "config": {
+        "sort-packages": true
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
