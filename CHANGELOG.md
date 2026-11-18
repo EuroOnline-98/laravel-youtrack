@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 - 2026-11-18
 
 - `YouTrack::fake()`: in-memory recording fake for tests of code that uses the package (no HTTP, no configuration needed), with seeding (`withIssue`, `withComment`, `withProject`) and assertions (`assertIssueCreated`, `assertCommented`, `assertStateChanged`, `assertNothingSent`, ...). See the README, "Testing your own code".
 - `Issues` and `Projects` are no longer `final` (the fake extends them).
