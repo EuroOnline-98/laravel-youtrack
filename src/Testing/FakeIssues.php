@@ -8,6 +8,8 @@ use Closure;
 use E98\YouTrack\Data\Attachment;
 use E98\YouTrack\Data\Comment;
 use E98\YouTrack\Data\Issue;
+use E98\YouTrack\Data\Link;
+use E98\YouTrack\Data\LinkType;
 use E98\YouTrack\Data\Project;
 use E98\YouTrack\Data\Tag;
 use E98\YouTrack\Data\Watcher;
@@ -45,6 +47,9 @@ final class FakeIssues extends Issues
 
     /** @var array<string, list<array{user: array<string, mixed>, isStarred: bool}>> */
     private array $watcherList = [];
+
+    /** @var list<array{type: LinkType, source: string, target: string}> source = the outward end ("parent for"). */
+    private array $relations = [];
 
     /** @var array<string, int> Highest issue number per project short name. */
     private array $counters = [];
@@ -162,6 +167,11 @@ final class FakeIssues extends Issues
         }
 
         unset($this->issues[$key], $this->comments[$key], $this->attachmentList[$key], $this->tagIds[$key], $this->watcherList[$key]);
+
+        $this->relations = array_values(array_filter(
+            $this->relations,
+            static fn (array $r): bool => $r['source'] !== $key && $r['target'] !== $key,
+        ));
     }
 
     /**
@@ -356,6 +366,104 @@ final class FakeIssues extends Issues
             $this->watcherList[$key] ?? [],
             static fn (array $w): bool => ! ($w['user']['login'] === $login && $w['isStarred']),
         ));
+    }
+
+    /**
+     * The default YouTrack link types.
+     *
+     * @return Collection<int, LinkType>
+     */
+    public function linkTypes(): Collection
+    {
+        $this->fake->record('linkTypes', []);
+
+        return $this->defaultLinkTypes();
+    }
+
+    /**
+     * @return Collection<int, Link>
+     */
+    public function links(string $id): Collection
+    {
+        $key = $this->locate($id);
+        $this->fake->record('links', ['id' => $this->issues[$key]['idReadable']]);
+
+        $links = [];
+        foreach ($this->relations as $relation) {
+            $isSource = $relation['source'] === $key;
+
+            if (! $isSource && $relation['target'] !== $key) {
+                continue;
+            }
+
+            /** @var LinkType $type */
+            $type = $relation['type'];
+            $other = $this->issues[$isSource ? $relation['target'] : $relation['source']];
+
+            $links[] = new Link(
+                $type->name,
+                $isSource || ! $type->directed ? $type->outward : $type->inward,
+                ! $type->directed ? 'BOTH' : ($isSource ? 'OUTWARD' : 'INWARD'),
+                $other['id'],
+                $other['idReadable'],
+                $other['summary'],
+                $other['resolved'] !== null,
+            );
+        }
+
+        return collect($links);
+    }
+
+    public function link(string $id, string $phrase, string $target): void
+    {
+        $key = $this->locate($id);
+        $targetKey = $this->locate($target);
+        [$type, $outward] = $this->resolveLinkType($phrase);
+
+        $this->fake->record('link', [
+            'id' => $this->issues[$key]['idReadable'],
+            'phrase' => $phrase,
+            'target' => $this->issues[$targetKey]['idReadable'],
+        ]);
+
+        $this->storeRelation($type, $outward ? $key : $targetKey, $outward ? $targetKey : $key);
+    }
+
+    public function unlink(string $id, string $phrase, string $target): void
+    {
+        $key = $this->locate($id);
+        $targetKey = $this->locate($target);
+        [$type, $outward] = $this->resolveLinkType($phrase);
+        [$source, $destination] = $outward ? [$key, $targetKey] : [$targetKey, $key];
+
+        $remaining = array_values(array_filter(
+            $this->relations,
+            static fn (array $r): bool => ! ($r['type']->id === $type->id && $r['source'] === $source && $r['target'] === $destination),
+        ));
+
+        if (count($remaining) === count($this->relations)) {
+            throw new NotFoundException("Issue {$id} has no '{$phrase}' link to {$target}.", 404);
+        }
+
+        $this->fake->record('unlink', [
+            'id' => $this->issues[$key]['idReadable'],
+            'phrase' => $phrase,
+            'target' => $this->issues[$targetKey]['idReadable'],
+        ]);
+
+        $this->relations = $remaining;
+    }
+
+    /**
+     * Link two existing issues without recording a call.
+     */
+    public function seedLink(string $id, string $phrase, string $target): void
+    {
+        $key = $this->locate($id);
+        $targetKey = $this->locate($target);
+        [$type, $outward] = $this->resolveLinkType($phrase);
+
+        $this->storeRelation($type, $outward ? $key : $targetKey, $outward ? $targetKey : $key);
     }
 
     /**
@@ -571,6 +679,50 @@ final class FakeIssues extends Issues
         $this->attachmentContents[$id] = $contents;
 
         return $attachment;
+    }
+
+    /**
+     * @return Collection<int, LinkType>
+     */
+    private function defaultLinkTypes(): Collection
+    {
+        return collect([
+            new LinkType('80-0', 'Relates', 'relates to', 'relates to', false, false),
+            new LinkType('80-1', 'Depend', 'is required for', 'depends on', true, false),
+            new LinkType('80-2', 'Duplicate', 'is duplicated by', 'duplicates', true, true),
+            new LinkType('80-3', 'Subtask', 'parent for', 'subtask of', true, true),
+        ]);
+    }
+
+    /**
+     * @return array{0: LinkType, 1: bool}
+     */
+    private function resolveLinkType(string $phrase): array
+    {
+        $types = $this->defaultLinkTypes();
+        $match = LinkType::match($types, $phrase);
+
+        if ($match === null) {
+            $available = $types->flatMap(fn (LinkType $t): array => $t->phrases())->unique()->implode("', '");
+
+            throw new YouTrackException("Unknown link type '{$phrase}'. Available: '{$available}'.");
+        }
+
+        return $match;
+    }
+
+    private function storeRelation(LinkType $type, string $source, string $target): void
+    {
+        foreach ($this->relations as $relation) {
+            $same = $relation['type']->id === $type->id && $relation['source'] === $source && $relation['target'] === $target;
+            $mirrored = ! $type->directed && $relation['type']->id === $type->id && $relation['source'] === $target && $relation['target'] === $source;
+
+            if ($same || $mirrored) {
+                return;
+            }
+        }
+
+        $this->relations[] = ['type' => $type, 'source' => $source, 'target' => $target];
     }
 
     /**

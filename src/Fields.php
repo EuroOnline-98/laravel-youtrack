@@ -21,6 +21,11 @@ final class Fields
 
     public const COMMENT = 'id,text,created,updated,author(id,login,fullName)';
 
+    public const LINK_TYPE = 'id,name,localizedName,sourceToTarget,targetToSource,directed,aggregation';
+
+    public const LINKS = 'id,direction,linkType(id,name,localizedName,sourceToTarget,targetToSource,directed,aggregation),'
+        . 'issues(id,idReadable,summary,resolved)';
+
     public const TAG = 'id,name,untagOnResolve,owner(id,login,fullName)';
 
     public const WATCHERS = 'watchers(hasStar,issueWatchers(id,isStarred,user(id,login,fullName)))';

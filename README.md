@@ -122,6 +122,13 @@ YouTrack::issues()->watchers('SUP-123');                                   // Co
 YouTrack::issues()->addWatcher('SUP-123', 'anna');
 YouTrack::issues()->removeWatcher('SUP-123', 'anna');
 
+// Links between issues
+YouTrack::issues()->link('SUP-2', 'subtask of', 'SUP-1');                  // SUP-2 is a subtask of SUP-1
+YouTrack::issues()->link('SUP-2', 'relates to', 'SUP-7');
+YouTrack::issues()->links('SUP-2');                                        // Collection<Link>: ->label, ->key, ->summary, ->resolved
+YouTrack::issues()->unlink('SUP-2', 'relates to', 'SUP-7');
+YouTrack::issues()->linkTypes();                                           // the phrases your YouTrack understands
+
 // Projects
 YouTrack::projects()->all();
 YouTrack::projects()->find('SUP');
@@ -146,6 +153,12 @@ Notes on tags and watchers:
 - Tags are private to their owner unless they are shared in YouTrack. The package only sees and uses the tags of the token's user (and tags shared with them); a tag created with `create: true` is owned by that user.
 - A tag is looked up by name (case-insensitive) or id. A name that looks like an id (`6-4`) is taken as an id; pass a `Tag` object for such names.
 - YouTrack's REST API has no endpoint to change the watchers of an issue, so `addWatcher()` and `removeWatcher()` send the commands `star <login>` and `unstar <login>`. `removeWatcher()` only removes users who starred the issue; users who follow it for other reasons (reporter, assignee, commenter) keep getting notifications.
+
+Notes on links:
+
+- The phrase says how the issue you link *from* relates to the other one, as written in YouTrack: `link('SUP-2', 'subtask of', 'SUP-1')` makes SUP-2 a subtask of SUP-1, `link('SUP-1', 'parent for', 'SUP-2')` does the same from the other side. The default phrases are `relates to`, `depends on` / `is required for`, `duplicates` / `is duplicated by` and `subtask of` / `parent for`. Matching ignores case. Your instance may use other (e.g. localized) phrases; `linkTypes()` lists them, and an unknown phrase fails with the list of available ones.
+- Each `Link` reads as "<this issue> `label` `key`": `subtask of SUP-1`. `direction` is `OUTWARD`, `INWARD` or `BOTH` (undirected types).
+- `link()` and `unlink()` need the "Link Issue" permission, and one extra request to look up the link types (and one for the target's id when you pass a readable id like `SUP-1`).
 
 You can also inject `E98\YouTrack\YouTrackClient` instead of using the facade.
 
@@ -202,7 +215,9 @@ YouTrack::fake()
 
 Assertions: `assertIssueCreated()` (array or closure), `assertIssueCreatedTimes()`, `assertNoIssueCreated()`, `assertCommented()`, `assertNothingCommented()`, `assertStateChanged()`, `assertUpdated()`, `assertCommandSent()`, `assertAttached()`, `assertAttachmentDownloaded()`, `assertAttachmentDeleted()`, `assertDeleted()` and `assertNothingSent()` (reads count as well). Files can be seeded with `withAttachment('SUP-12', 'trace.log', 'contents')`; files attached through the fake can be listed and downloaded again.
 
-Tags and watchers: seed with `withTag('Bug')`, `withTagOn('SUP-12', 'Bug')` and `withWatcher('SUP-12', 'anna')`, and assert with `assertTagged()`, `assertUntagged()`, `assertTagCreated()`, `assertWatcherAdded()` and `assertWatcherRemoved()`. A tag has to be registered with `withTag()` (or created with `create: true`), like in YouTrack. `recorded('comment')` returns the raw calls if you need your own checks.
+Tags and watchers: seed with `withTag('Bug')`, `withTagOn('SUP-12', 'Bug')` and `withWatcher('SUP-12', 'anna')`, and assert with `assertTagged()`, `assertUntagged()`, `assertTagCreated()`, `assertWatcherAdded()` and `assertWatcherRemoved()`. A tag has to be registered with `withTag()` (or created with `create: true`), like in YouTrack.
+
+Links: seed with `withLink('SUP-2', 'subtask of', 'SUP-1')` (both issues must exist in the fake) and assert with `assertLinked('SUP-2', 'subtask of', 'SUP-1')` and `assertUnlinked()`. The fake knows the four default link types. `recorded('comment')` returns the raw calls if you need your own checks.
 
 What the fake does not do:
 

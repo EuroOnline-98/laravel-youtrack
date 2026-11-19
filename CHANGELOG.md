@@ -6,6 +6,7 @@
 - Tags: `YouTrack::tags()` (`all`, `find`, `create`, `resolve`), `issues()->tags()`, `addTag()` (by name, id or `Tag`; optionally creating the tag) and `removeTag()`.
 - Watchers: `issues()->watchers()` (typed `Watcher` objects), `addWatcher()` and `removeWatcher()` (via the `star` / `unstar` commands, since the REST API cannot change watchers).
 - `YouTrack::fake()` supports tags and watchers (`withTag`, `withTagOn`, `withWatcher`, `assertTagged`, `assertUntagged`, `assertTagCreated`, `assertWatcherAdded`, `assertWatcherRemoved`).
+- Issue links: `issues()->link()` / `unlink()` take a phrase such as `subtask of` or `relates to`, `links()` returns typed `Link` objects, `linkTypes()` lists the types of the instance. `YouTrack::fake()` supports them (`withLink`, `assertLinked`, `assertUnlinked`).
 - `YouTrackClient::fetch()`: authenticated file download; the token is only sent to the configured YouTrack host.
 - `YouTrack::fake()` supports the new attachment methods (`withAttachment()`, `assertAttachmentDownloaded()`, `assertAttachmentDeleted()`).
 - The attachment `fields` selection now also asks for `created` and `author`, so `attach()` returns these as well.

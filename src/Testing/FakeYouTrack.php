@@ -165,6 +165,18 @@ final class FakeYouTrack extends YouTrackClient
         return $this;
     }
 
+    /**
+     * Link two issues that already exist in the fake; the phrase says how $issue relates to $target.
+     *
+     *     $fake->withLink('SUP-2', 'subtask of', 'SUP-1');
+     */
+    public function withLink(string $issue, string $phrase, string $target): self
+    {
+        $this->fakeIssues->seedLink($issue, $phrase, $target);
+
+        return $this;
+    }
+
     public function withProject(string $shortName, ?string $name = null): self
     {
         $this->fakeProjects->register($shortName, $name);
@@ -239,7 +251,7 @@ final class FakeYouTrack extends YouTrackClient
     /**
      * The recorded calls (type: create, get, search, update, delete, comments, comment, command, attach,
      * attachments, deleteAttachment, download, tags, addTag, removeTag, listTags, createTag, watchers,
-     * addWatcher, removeWatcher).
+     * addWatcher, removeWatcher, linkTypes, links, link, unlink).
      *
      * @return list<array<string, mixed>> The data of each call, in the order they happened.
      */
@@ -470,6 +482,20 @@ final class FakeYouTrack extends YouTrackClient
         $this->assertWatcherCall('removeWatcher', $issue, $login, "Expected a watcher to be removed from {$issue}" . ($login === null ? '' : " ('{$login}')") . ', but none was.');
     }
 
+    /**
+     * Assert that the issue was linked to another one; optionally with this phrase ("subtask of")
+     * and/or this target.
+     */
+    public function assertLinked(string $issue, ?string $phrase = null, ?string $target = null): void
+    {
+        $this->assertLinkCall('link', $issue, $phrase, $target, "Expected {$issue} to be linked" . ($phrase === null ? '' : " ('{$phrase}')") . ($target === null ? '' : " to {$target}") . ', but it was not.');
+    }
+
+    public function assertUnlinked(string $issue, ?string $phrase = null, ?string $target = null): void
+    {
+        $this->assertLinkCall('unlink', $issue, $phrase, $target, "Expected a link of {$issue} to be removed" . ($phrase === null ? '' : " ('{$phrase}')") . ($target === null ? '' : " to {$target}") . ', but it was not.');
+    }
+
     public function assertDeleted(string $issue): void
     {
         $deleted = array_filter(
@@ -535,6 +561,18 @@ final class FakeYouTrack extends YouTrackClient
             $this->recorded($type),
             static fn (array $call): bool => strcasecmp((string) $call['id'], $issue) === 0
                 && ($tag === null || strcasecmp((string) $call['tag'], $tag) === 0 || $call['tagId'] === $tag),
+        );
+
+        Assert::assertNotEmpty($calls, $message);
+    }
+
+    private function assertLinkCall(string $type, string $issue, ?string $phrase, ?string $target, string $message): void
+    {
+        $calls = array_filter(
+            $this->recorded($type),
+            static fn (array $call): bool => strcasecmp((string) $call['id'], $issue) === 0
+                && ($phrase === null || strcasecmp((string) $call['phrase'], $phrase) === 0)
+                && ($target === null || strcasecmp((string) $call['target'], $target) === 0),
         );
 
         Assert::assertNotEmpty($calls, $message);

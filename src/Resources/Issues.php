@@ -8,6 +8,8 @@ use E98\YouTrack\CustomField;
 use E98\YouTrack\Data\Attachment;
 use E98\YouTrack\Data\Comment;
 use E98\YouTrack\Data\Issue;
+use E98\YouTrack\Data\Link;
+use E98\YouTrack\Data\LinkType;
 use E98\YouTrack\Data\Tag;
 use E98\YouTrack\Data\Watcher;
 use E98\YouTrack\Exceptions\ConfigurationException;
@@ -348,6 +350,97 @@ class Issues
     public function removeWatcher(string $id, string $login): void
     {
         $this->command($id, 'unstar ' . $login);
+    }
+
+    /**
+     * The link types of the instance (Relates, Depend, Duplicate, Subtask, ...).
+     *
+     * @return Collection<int, LinkType>
+     */
+    public function linkTypes(): Collection
+    {
+        $data = $this->client->get('issueLinkTypes', ['fields' => Fields::LINK_TYPE, '$top' => 100]);
+
+        return collect($data ?? [])->map(fn (array $t): LinkType => LinkType::fromArray($t))->values();
+    }
+
+    /**
+     * The issues this issue is linked to, one Link per linked issue.
+     *
+     * @return Collection<int, Link>
+     */
+    public function links(string $id): Collection
+    {
+        $data = $this->client->get('issues/' . rawurlencode($id) . '/links', ['fields' => Fields::LINKS, '$top' => 100]);
+
+        $links = [];
+        foreach ((array) $data as $entry) {
+            foreach ((array) ($entry['issues'] ?? []) as $issue) {
+                $links[] = Link::fromEntry((array) $entry, (array) $issue);
+            }
+        }
+
+        return collect($links);
+    }
+
+    /**
+     * Link two issues. The phrase says how $id relates to $target:
+     *
+     *     link('SUP-2', 'subtask of', 'SUP-1')   // SUP-2 is a subtask of SUP-1
+     *     link('SUP-2', 'relates to', 'SUP-7')
+     *
+     * The phrases are the ones configured in YouTrack (default: "relates to", "depends on", "is required for",
+     * "duplicates", "is duplicated by", "parent for", "subtask of"); linkTypes() lists them. Needs the
+     * "Link Issue" permission.
+     *
+     * @throws YouTrackException When no link type has that phrase.
+     * @throws NotFoundException When the target issue does not exist.
+     */
+    public function link(string $id, string $phrase, string $target): void
+    {
+        [$type, $outward] = $this->resolveLinkType($phrase);
+
+        $this->client->post(
+            'issues/' . rawurlencode($id) . '/links/' . $type->linkId($outward) . '/issues',
+            ['id' => $this->databaseId($target)],
+            ['fields' => 'id'],
+        );
+    }
+
+    /**
+     * Remove a link made with link(); same phrase and arguments.
+     *
+     * @throws YouTrackException When no link type has that phrase.
+     */
+    public function unlink(string $id, string $phrase, string $target): void
+    {
+        [$type, $outward] = $this->resolveLinkType($phrase);
+
+        $this->client->delete(
+            'issues/' . rawurlencode($id) . '/links/' . $type->linkId($outward) . '/issues/' . rawurlencode($this->databaseId($target)),
+        );
+    }
+
+    /**
+     * @return array{0: LinkType, 1: bool}
+     */
+    private function resolveLinkType(string $phrase): array
+    {
+        $types = $this->linkTypes();
+        $match = LinkType::match($types, $phrase);
+
+        if ($match === null) {
+            $available = $types->flatMap(fn (LinkType $t): array => $t->phrases())->unique()->implode("', '");
+
+            throw new YouTrackException("Unknown link type '{$phrase}'. Available: '{$available}'.");
+        }
+
+        return $match;
+    }
+
+    private function databaseId(string $issue): string
+    {
+        return preg_match('/^\d+-\d+$/', $issue) === 1 ? $issue : $this->get($issue)->id;
     }
 
     private function downloadUrl(Attachment $attachment): string
