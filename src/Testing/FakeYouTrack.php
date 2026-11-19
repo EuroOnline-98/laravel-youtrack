@@ -8,6 +8,7 @@ use Closure;
 use E98\YouTrack\Exceptions\YouTrackException;
 use E98\YouTrack\Support\FieldValue;
 use E98\YouTrack\YouTrackClient;
+use Illuminate\Http\Client\Response;
 use PHPUnit\Framework\Assert;
 
 /**
@@ -34,6 +35,8 @@ final class FakeYouTrack extends YouTrackClient
 
     private readonly FakeProjects $fakeProjects;
 
+    private readonly FakeTags $fakeTags;
+
     private readonly FakeIssues $fakeIssues;
 
     /** @var list<array{type: string, data: array<string, mixed>}> */
@@ -56,7 +59,8 @@ final class FakeYouTrack extends YouTrackClient
         parent::__construct($config);
 
         $this->fakeProjects = new FakeProjects($this);
-        $this->fakeIssues = new FakeIssues($this, $this->fakeProjects);
+        $this->fakeTags = new FakeTags($this);
+        $this->fakeIssues = new FakeIssues($this, $this->fakeProjects, $this->fakeTags);
     }
 
     public function issues(): FakeIssues
@@ -67,6 +71,11 @@ final class FakeYouTrack extends YouTrackClient
     public function projects(): FakeProjects
     {
         return $this->fakeProjects;
+    }
+
+    public function tags(): FakeTags
+    {
+        return $this->fakeTags;
     }
 
     /**
@@ -90,6 +99,11 @@ final class FakeYouTrack extends YouTrackClient
         throw $this->unexpected('POST ' . $uri . ' (upload)');
     }
 
+    public function fetch(string $url, array $options = []): Response
+    {
+        throw $this->unexpected('GET ' . $url . ' (file download)');
+    }
+
     // ---------------------------------------------------------------- setup
 
     /**
@@ -107,6 +121,46 @@ final class FakeYouTrack extends YouTrackClient
     public function withComment(string $issue, string $text, ?string $author = null): self
     {
         $this->fakeIssues->seedComment($issue, $text, $author);
+
+        return $this;
+    }
+
+    /**
+     * Put a file on an issue that already exists in the fake, so your code can list and download it.
+     */
+    public function withAttachment(string $issue, string $name, string $contents = '', ?string $mimeType = null): self
+    {
+        $this->fakeIssues->seedAttachment($issue, $name, $contents, $mimeType);
+
+        return $this;
+    }
+
+    /**
+     * A tag that already exists in YouTrack (and is visible to the token's user).
+     */
+    public function withTag(string $name): self
+    {
+        $this->fakeTags->register($name);
+
+        return $this;
+    }
+
+    /**
+     * Tag an issue that already exists in the fake; the tag is registered if needed.
+     */
+    public function withTagOn(string $issue, string $tag): self
+    {
+        $this->fakeIssues->seedTag($issue, $tag);
+
+        return $this;
+    }
+
+    /**
+     * Make a user watch an issue that already exists in the fake.
+     */
+    public function withWatcher(string $issue, string $login, bool $starred = true): self
+    {
+        $this->fakeIssues->seedWatcher($issue, $login, $starred);
 
         return $this;
     }
@@ -183,7 +237,9 @@ final class FakeYouTrack extends YouTrackClient
     }
 
     /**
-     * The recorded calls (type: create, get, search, update, delete, comments, comment, command, attach).
+     * The recorded calls (type: create, get, search, update, delete, comments, comment, command, attach,
+     * attachments, deleteAttachment, download, tags, addTag, removeTag, listTags, createTag, watchers,
+     * addWatcher, removeWatcher).
      *
      * @return list<array<string, mixed>> The data of each call, in the order they happened.
      */
@@ -345,6 +401,75 @@ final class FakeYouTrack extends YouTrackClient
         Assert::assertNotEmpty($attachments, "Expected a file to be attached to {$issue}, but none was.");
     }
 
+    /**
+     * Assert that an attachment was deleted from the issue; optionally by its name or id.
+     */
+    public function assertAttachmentDeleted(string $issue, ?string $nameOrId = null): void
+    {
+        $deleted = array_filter(
+            $this->recorded('deleteAttachment'),
+            static fn (array $call): bool => strcasecmp((string) $call['id'], $issue) === 0
+                && ($nameOrId === null || $call['name'] === $nameOrId || $call['attachment'] === $nameOrId),
+        );
+
+        Assert::assertNotEmpty($deleted, "Expected an attachment to be deleted from {$issue}, but none was.");
+    }
+
+    /**
+     * Assert that an attachment was downloaded (contents, file or stream); optionally by its name or id.
+     */
+    public function assertAttachmentDownloaded(?string $nameOrId = null): void
+    {
+        $downloads = array_filter(
+            $this->recorded('download'),
+            static fn (array $call): bool => $nameOrId === null || $call['name'] === $nameOrId || $call['attachment'] === $nameOrId,
+        );
+
+        Assert::assertNotEmpty($downloads, 'Expected an attachment to be downloaded, but none was.');
+    }
+
+    /**
+     * Assert that a tag was added to the issue; optionally the tag with this name.
+     */
+    public function assertTagged(string $issue, ?string $tag = null): void
+    {
+        $this->assertTagCall('addTag', $issue, $tag, "Expected {$issue} to be tagged" . ($tag === null ? '' : " with '{$tag}'") . ', but it was not.');
+    }
+
+    /**
+     * Assert that a tag was removed from the issue; optionally the tag with this name.
+     */
+    public function assertUntagged(string $issue, ?string $tag = null): void
+    {
+        $this->assertTagCall('removeTag', $issue, $tag, "Expected a tag to be removed from {$issue}" . ($tag === null ? '' : " ('{$tag}')") . ', but it was not.');
+    }
+
+    /**
+     * Assert that a tag was created (not merely used); optionally with this name.
+     */
+    public function assertTagCreated(?string $name = null): void
+    {
+        $created = array_filter(
+            $this->recorded('createTag'),
+            static fn (array $call): bool => $name === null || strcasecmp((string) $call['name'], $name) === 0,
+        );
+
+        Assert::assertNotEmpty($created, 'Expected a tag to be created' . ($name === null ? '' : " ('{$name}')") . ', but none was.');
+    }
+
+    /**
+     * Assert that a user was made a watcher of the issue; optionally this login.
+     */
+    public function assertWatcherAdded(string $issue, ?string $login = null): void
+    {
+        $this->assertWatcherCall('addWatcher', $issue, $login, "Expected a watcher to be added to {$issue}" . ($login === null ? '' : " ('{$login}')") . ', but none was.');
+    }
+
+    public function assertWatcherRemoved(string $issue, ?string $login = null): void
+    {
+        $this->assertWatcherCall('removeWatcher', $issue, $login, "Expected a watcher to be removed from {$issue}" . ($login === null ? '' : " ('{$login}')") . ', but none was.');
+    }
+
     public function assertDeleted(string $issue): void
     {
         $deleted = array_filter(
@@ -402,6 +527,28 @@ final class FakeYouTrack extends YouTrackClient
         }
 
         return true;
+    }
+
+    private function assertTagCall(string $type, string $issue, ?string $tag, string $message): void
+    {
+        $calls = array_filter(
+            $this->recorded($type),
+            static fn (array $call): bool => strcasecmp((string) $call['id'], $issue) === 0
+                && ($tag === null || strcasecmp((string) $call['tag'], $tag) === 0 || $call['tagId'] === $tag),
+        );
+
+        Assert::assertNotEmpty($calls, $message);
+    }
+
+    private function assertWatcherCall(string $type, string $issue, ?string $login, string $message): void
+    {
+        $calls = array_filter(
+            $this->recorded($type),
+            static fn (array $call): bool => strcasecmp((string) $call['id'], $issue) === 0
+                && ($login === null || $call['login'] === $login),
+        );
+
+        Assert::assertNotEmpty($calls, $message);
     }
 
     private function unexpected(string $request): YouTrackException

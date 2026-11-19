@@ -327,6 +327,103 @@ final class FakeTest extends TestCase
         YouTrack::issues()->get('DEMO-5');
     }
 
+    public function test_attached_files_can_be_listed_downloaded_and_deleted(): void
+    {
+        $source = tempnam(sys_get_temp_dir(), 'yt');
+        file_put_contents($source, 'log lines');
+        $target = tempnam(sys_get_temp_dir(), 'yt');
+
+        try {
+            $fake = YouTrack::fake()->withIssue('DEMO-5');
+
+            YouTrack::issues()->attach('DEMO-5', $source, 'trace.log');
+            $attachments = YouTrack::issues()->attachments('DEMO-5');
+
+            $this->assertCount(1, $attachments);
+            $this->assertSame('trace.log', $attachments[0]->name);
+            $this->assertSame(9, $attachments[0]->size);
+            $this->assertSame('log lines', YouTrack::issues()->attachmentContents($attachments[0]));
+            $this->assertSame('log lines', YouTrack::issues()->attachmentStream($attachments[0])->getContents());
+            $this->assertSame($target, YouTrack::issues()->saveAttachment($attachments[0], $target));
+            $this->assertSame('log lines', file_get_contents($target));
+
+            YouTrack::issues()->deleteAttachment('DEMO-5', $attachments[0]);
+
+            $this->assertCount(0, YouTrack::issues()->attachments('DEMO-5'));
+            $fake->assertAttached('DEMO-5', 'trace.log');
+            $fake->assertAttachmentDownloaded('trace.log');
+            $fake->assertAttachmentDownloaded($attachments[0]->id);
+            $fake->assertAttachmentDeleted('DEMO-5');
+            $fake->assertAttachmentDeleted('demo-5', 'trace.log');
+        } finally {
+            @unlink($source);
+            @unlink($target);
+        }
+    }
+
+    public function test_seeded_attachments_are_listed_with_their_contents(): void
+    {
+        YouTrack::fake()
+            ->withIssue('DEMO-5')
+            ->withAttachment('DEMO-5', 'shot.png', 'PNGDATA', 'image/png');
+
+        $attachment = YouTrack::issues()->attachments('DEMO-5')->first();
+
+        $this->assertSame('image/png', $attachment->mimeType);
+        $this->assertSame(7, $attachment->size);
+        $this->assertSame('PNGDATA', YouTrack::issues()->attachmentContents($attachment));
+    }
+
+    public function test_deleting_an_unknown_attachment_throws_not_found(): void
+    {
+        YouTrack::fake()->withIssue('DEMO-5');
+
+        $this->expectException(NotFoundException::class);
+
+        YouTrack::issues()->deleteAttachment('DEMO-5', '8-999');
+    }
+
+    public function test_assert_attachment_deleted_fails_when_nothing_was_deleted(): void
+    {
+        $fake = YouTrack::fake()->withIssue('DEMO-5')->withAttachment('DEMO-5', 'a.txt');
+
+        $this->expectException(ExpectationFailedException::class);
+
+        $fake->assertAttachmentDeleted('DEMO-5');
+    }
+
+    public function test_assert_attachment_downloaded_fails_when_nothing_was_downloaded(): void
+    {
+        $fake = YouTrack::fake()->withIssue('DEMO-5')->withAttachment('DEMO-5', 'a.txt');
+        YouTrack::issues()->attachments('DEMO-5');
+
+        $this->expectException(ExpectationFailedException::class);
+
+        $fake->assertAttachmentDownloaded();
+    }
+
+    public function test_deleting_an_issue_drops_its_attachments(): void
+    {
+        YouTrack::fake()->withIssue('DEMO-5')->withAttachment('DEMO-5', 'a.txt', 'x');
+        $attachment = YouTrack::issues()->attachments('DEMO-5')->first();
+
+        YouTrack::issues()->delete('DEMO-5');
+
+        $this->expectException(NotFoundException::class);
+
+        YouTrack::issues()->attachmentContents($attachment);
+    }
+
+    public function test_file_downloads_through_the_raw_client_are_refused(): void
+    {
+        YouTrack::fake();
+
+        $this->expectException(YouTrackException::class);
+        $this->expectExceptionMessage('file download');
+
+        YouTrack::fetch('/api/files/1-1');
+    }
+
     public function test_search_matches_text_by_default(): void
     {
         YouTrack::fake()

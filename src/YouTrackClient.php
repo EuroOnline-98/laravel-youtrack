@@ -12,6 +12,7 @@ use E98\YouTrack\Exceptions\NotFoundException;
 use E98\YouTrack\Exceptions\YouTrackException;
 use E98\YouTrack\Resources\Issues;
 use E98\YouTrack\Resources\Projects;
+use E98\YouTrack\Resources\Tags;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\RequestException;
@@ -30,6 +31,8 @@ class YouTrackClient
 
     private ?Issues $issues = null;
 
+    private ?Tags $tags = null;
+
     /**
      * @param  array<string, mixed>  $config  The "youtrack" config array.
      */
@@ -45,6 +48,11 @@ class YouTrackClient
     public function projects(): Projects
     {
         return $this->projects ??= new Projects($this);
+    }
+
+    public function tags(): Tags
+    {
+        return $this->tags ??= new Tags($this);
     }
 
     /**
@@ -163,9 +171,32 @@ class YouTrackClient
     }
 
     /**
+     * Authenticated GET of a file URL on the YouTrack host, e.g. the `url` of an attachment
+     * ("/api/files/72-5?sign=..."). The token is only sent to the configured YouTrack host.
+     *
+     * @param  array<string, mixed>  $options  Guzzle request options, e.g. ['sink' => $path] or ['stream' => true].
+     *
+     * @throws ApiException When YouTrack answers with an error status.
+     */
+    public function fetch(string $url, array $options = []): Response
+    {
+        $absolute = $this->absoluteUrl($url);
+
+        return $this->sendResponse(fn (): Response => $this->http()->withOptions($options)->get($absolute));
+    }
+
+    /**
      * @param  callable(): Response  $call
      */
     private function send(callable $call): mixed
+    {
+        return $this->sendResponse($call)->json();
+    }
+
+    /**
+     * @param  callable(): Response  $call
+     */
+    private function sendResponse(callable $call): Response
     {
         try {
             $response = $call();
@@ -177,7 +208,23 @@ class YouTrackClient
             throw $this->toException($response);
         }
 
-        return $response->json();
+        return $response;
+    }
+
+    private function absoluteUrl(string $url): string
+    {
+        $base = $this->baseUrl();
+        $absolute = preg_match('#^https?://#i', $url) === 1 ? $url : $base . '/' . ltrim($url, '/');
+
+        $expected = parse_url($base);
+        $actual = parse_url($absolute);
+
+        if (strtolower((string) ($actual['host'] ?? '')) !== strtolower((string) ($expected['host'] ?? ''))
+            || ($actual['port'] ?? null) !== ($expected['port'] ?? null)) {
+            throw new YouTrackException("Refusing to send the YouTrack token to another host: {$url}");
+        }
+
+        return $absolute;
     }
 
     private function toException(Response $response): ApiException

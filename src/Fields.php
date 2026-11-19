@@ -21,5 +21,9 @@ final class Fields
 
     public const COMMENT = 'id,text,created,updated,author(id,login,fullName)';
 
-    public const ATTACHMENT = 'id,name,size,mimeType,url';
+    public const TAG = 'id,name,untagOnResolve,owner(id,login,fullName)';
+
+    public const WATCHERS = 'watchers(hasStar,issueWatchers(id,isStarred,user(id,login,fullName)))';
+
+    public const ATTACHMENT = 'id,name,size,mimeType,url,created,author(id,login,fullName)';
 }

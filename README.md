@@ -97,6 +97,31 @@ YouTrack::issues()->comment('SUP-123', 'Reproduced on staging.');
 YouTrack::issues()->comments('SUP-123');
 YouTrack::issues()->attach('SUP-123', storage_path('logs/laravel.log'));
 
+foreach (YouTrack::issues()->attachments('SUP-123') as $file) {
+    $file->name;       // "laravel.log"
+    $file->size;       // bytes
+    $file->mimeType;
+    $file->author?->login;
+    $file->created;    // CarbonImmutable
+}
+
+$file = YouTrack::issues()->attachments('SUP-123')->first();
+YouTrack::issues()->saveAttachment($file, storage_path('app/laravel.log'));  // streams into the file
+YouTrack::issues()->attachmentContents($file);                               // string, for small files
+YouTrack::issues()->attachmentStream($file);                                 // PSR-7 stream
+YouTrack::issues()->deleteAttachment('SUP-123', $file);                      // or the attachment id
+
+// Tags and watchers
+YouTrack::issues()->addTag('SUP-123', 'Release blocker');                  // by name, id or Tag
+YouTrack::issues()->addTag('SUP-123', 'Release 0.3', create: true);        // creates the tag if missing
+YouTrack::issues()->tags('SUP-123');                                       // Collection<Tag>
+YouTrack::issues()->removeTag('SUP-123', 'Release blocker');
+YouTrack::tags()->all();                                                   // the tags the token's user can see
+
+YouTrack::issues()->watchers('SUP-123');                                   // Collection<Watcher> (->user, ->starred)
+YouTrack::issues()->addWatcher('SUP-123', 'anna');
+YouTrack::issues()->removeWatcher('SUP-123', 'anna');
+
 // Projects
 YouTrack::projects()->all();
 YouTrack::projects()->find('SUP');
@@ -109,6 +134,18 @@ Notes on `command()`:
 - Prefer `changeState()` for plain state changes; it sends a typed field value and does not depend on the command parser.
 - Multi-word values are written without braces (`'State In Progress'`). On a YouTrack with a Hungarian UI the brace form (`'State {In Progress}'`) was rejected with HTTP 400.
 - The command is parsed in the language of the token's user, so error messages may be localized.
+
+Notes on attachments:
+
+- `saveAttachment()` writes to `<path>.part` and renames it when the download is complete, so a failed download never leaves a partial file. The target directory must exist.
+- Downloads use the attachment's `url`, sent with your token. The token is only ever sent to the configured YouTrack host; a URL on another host is refused.
+- `deleteAttachment()` needs the permission to delete attachments, which the integration user may not have. It then fails with `ForbiddenException`.
+
+Notes on tags and watchers:
+
+- Tags are private to their owner unless they are shared in YouTrack. The package only sees and uses the tags of the token's user (and tags shared with them); a tag created with `create: true` is owned by that user.
+- A tag is looked up by name (case-insensitive) or id. A name that looks like an id (`6-4`) is taken as an id; pass a `Tag` object for such names.
+- YouTrack's REST API has no endpoint to change the watchers of an issue, so `addWatcher()` and `removeWatcher()` send the commands `star <login>` and `unstar <login>`. `removeWatcher()` only removes users who starred the issue; users who follow it for other reasons (reporter, assignee, commenter) keep getting notifications.
 
 You can also inject `E98\YouTrack\YouTrackClient` instead of using the facade.
 
@@ -163,7 +200,9 @@ YouTrack::fake()
     ->withProject('SUP', 'Support');
 ```
 
-Assertions: `assertIssueCreated()` (array or closure), `assertIssueCreatedTimes()`, `assertNoIssueCreated()`, `assertCommented()`, `assertNothingCommented()`, `assertStateChanged()`, `assertUpdated()`, `assertCommandSent()`, `assertAttached()`, `assertDeleted()` and `assertNothingSent()` (reads count as well). `recorded('comment')` returns the raw calls if you need your own checks.
+Assertions: `assertIssueCreated()` (array or closure), `assertIssueCreatedTimes()`, `assertNoIssueCreated()`, `assertCommented()`, `assertNothingCommented()`, `assertStateChanged()`, `assertUpdated()`, `assertCommandSent()`, `assertAttached()`, `assertAttachmentDownloaded()`, `assertAttachmentDeleted()`, `assertDeleted()` and `assertNothingSent()` (reads count as well). Files can be seeded with `withAttachment('SUP-12', 'trace.log', 'contents')`; files attached through the fake can be listed and downloaded again.
+
+Tags and watchers: seed with `withTag('Bug')`, `withTagOn('SUP-12', 'Bug')` and `withWatcher('SUP-12', 'anna')`, and assert with `assertTagged()`, `assertUntagged()`, `assertTagCreated()`, `assertWatcherAdded()` and `assertWatcherRemoved()`. A tag has to be registered with `withTag()` (or created with `create: true`), like in YouTrack. `recorded('comment')` returns the raw calls if you need your own checks.
 
 What the fake does not do:
 
